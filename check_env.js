@@ -1,0 +1,10 @@
+require('dotenv').config();
+const pk = process.env.FIREBASE_PRIVATE_KEY;
+console.log('Length:', pk?.length);
+console.log('Starts with:', pk?.substring(0, 30));
+console.log('Ends with:', pk?.substring(pk.length - 10));
+console.log('Has quotes:', pk?.startsWith('"'));
+console.log('Has \\\\n:', pk?.includes('\\n'));
+console.log('Has actual newlines:', pk?.includes('\n'));
+console.log('Project ID:', process.env.FIREBASE_PROJECT_ID);
+console.log('Client Email:', process.env.FIREBASE_CLIENT_EMAIL);
