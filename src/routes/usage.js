@@ -56,6 +56,40 @@ router.post('/devices/register', async (req, res) => {
   }
 });
 
+router.delete('/devices/:deviceId', async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+    const { deviceId } = req.params;
+    if (!deviceId) {
+      return res.status(400).json({ error: 'deviceId is required' });
+    }
+
+    // 1. Delete from devices collection
+    await db.collection(DEVICES_COLLECTION).doc(deviceId).delete();
+
+    // 2. Delete from deviceStatus collection
+    await db.collection(STATUS_COLLECTION).doc(deviceId).delete();
+
+    // 3. Delete usage history for this device
+    const usageSnapshot = await db
+      .collection(USAGE_COLLECTION)
+      .where('deviceId', '==', deviceId)
+      .get();
+
+    if (!usageSnapshot.empty) {
+      const batch = db.batch();
+      usageSnapshot.docs.forEach(doc => batch.delete(doc.ref));
+      await batch.commit();
+    }
+
+    res.json({ success: true, message: `Device ${deviceId} removed` });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.get('/status/:deviceId', async (req, res) => {
   try {
     if (!db) {
