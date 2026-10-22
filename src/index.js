@@ -7,6 +7,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 require('dotenv').config();
 
 const usageRoutes = require('./routes/usage');
+const mediaRoutes = require('./routes/media');
 
 const app = express();
 const server = http.createServer(app);
@@ -23,6 +24,7 @@ app.get('/health', (req, res) => {
 });
 
 app.use('/api', usageRoutes);
+app.use('/api', mediaRoutes);
 
 // ---- Commands (dashboard sets, phone polls) ----
 const audioCommands = new Map();
