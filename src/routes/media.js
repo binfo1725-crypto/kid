@@ -201,7 +201,8 @@ router.get('/media/:deviceId', (req, res) => {
 router.get('/media/thumb/:deviceId/:mediaId', (req, res) => {
   const { deviceId, mediaId } = req.params;
   const size = parseInt(req.query.size, 10) || 150;
-  const file = thumbFile(deviceId, mediaId, size);
+  let file = thumbFile(deviceId, mediaId, size);
+  if (!fs.existsSync(file)) file = thumbFile(deviceId, mediaId, 150);
   if (fs.existsSync(file)) return res.sendFile(file);
   return res.status(404).json({ error: 'thumbnail not ready' });
 });
@@ -251,7 +252,7 @@ router.get('/media/command/:deviceId', (req, res) => {
   const list = mediaCommands.get(deviceId) || [];
   const command = list.shift();
   if (!list.length) mediaCommands.delete(deviceId);
-  res.json(command || {});
+  res.json(command ? { command, ...command } : {});
 });
 
 router.get('/media/result/:deviceId/:requestId', (req, res) => {
