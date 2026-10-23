@@ -2,7 +2,6 @@ node_modules
 npm-debug.log
 .env
 fly.toml
-Dockerfile
 .dockerignore
 *.md
 data/media/*
